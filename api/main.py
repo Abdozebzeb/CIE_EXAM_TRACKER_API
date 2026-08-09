@@ -133,3 +133,42 @@ def get_timetable():
         "count": len(data),
         "data": data
     }
+@app.get("/test")
+def get_test_timetable():
+    mock_data = [
+        {
+            "id": 1,
+            "zone": "Zone 4",
+            "season": "June 2026",
+            "syllabus_name": "Mathematics",
+            "code": "9709/12",
+            "date": "15 May 2026",
+            "duration": "1h 50m",
+            "session": "AM"
+        },
+        {
+            "id": 2,
+            "zone": "Zone 4",
+            "season": "June 2026",
+            "syllabus_name": "Physics",
+            "code": "9702/22",
+            "date": "20 May 2026",
+            "duration": "1h 15m",
+            "session": "PM"
+        },
+        {
+            "id": 3,
+            "zone": "Zone 4",
+            "season": "June 2026",
+            "syllabus_name": "Computer Science",
+            "code": "9618/12",
+            "date": "22 May 2026",
+            "duration": "1h 30m",
+            "session": "AM"
+        }
+    ]
+    return {
+        "status": "success",
+        "count": len(mock_data),
+        "data": mock_data
+    }
