@@ -1,25 +1,33 @@
 import os
 import re
-import json
-import base64
 import requests
 import pdfplumber
 from bs4 import BeautifulSoup
 from io import BytesIO
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
-app = FastAPI(title="Cambridge Timetable API")
+app = FastAPI(
+    title="Cambridge Timetable API",
+    description="Scrapes and serves exam timetable data for CIE",
+    version="1.0.0"
+)
+
+# Enable CORS for Flutter app calls
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 BASE_URL = "https://www.cambridgeinternational.org/exam-administration/cambridge-exams-officers-guide/phase-1-preparation/timetabling-exams/exam-timetables/"
 
-GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
-GITHUB_REPO = os.getenv("GITHUB_REPO")  # Format: "username/repo-name"
-JSON_FILE_PATH = "timetable.json"
-
-# --- HELPER FUNCTIONS FOR SCRAPING ---
 def get_pdf_links():
     response = requests.get(BASE_URL)
     soup = BeautifulSoup(response.text, 'html.parser')
+    
     links = []
     for a in soup.find_all('a', href=True):
         href = a['href']
@@ -32,11 +40,16 @@ def parse_metadata_from_filename(url):
     filename = url.split('/')[-1]
     pattern = r"\d+-(\w+)-(\d{4})-zone-(\d+(?:-uk)?)-timetable\.pdf"
     match = re.search(pattern, filename, re.IGNORECASE)
+    
     if match:
         month = match.group(1).capitalize()
         year = match.group(2)
         zone_num = match.group(3).upper().replace('-', ' ')
-        return f"Zone {zone_num}", f"{month} {year}"
+        
+        season = f"{month} {year}"
+        zone = f"Zone {zone_num}"
+        return zone, season
+    
     return "Unknown Zone", "Unknown Season"
 
 def process_pdf(pdf_url, zone, season, start_id):
@@ -51,103 +64,133 @@ def process_pdf(pdf_url, zone, season, start_id):
             for page in pdf.pages:
                 text = page.extract_text() or ""
                 normalized_text = re.sub(r'\s+', ' ', text).lower()
+                
                 if target_phrase in normalized_text:
                     tables = page.extract_tables()
                     for table in tables:
                         for row in table:
                             cleaned_row = [str(cell).strip().replace('\n', ' ') if cell is not None else "" for cell in row]
+                            
                             if not cleaned_row or any(h.lower() in cleaned_row[0].lower() for h in ["syllabus name", "syllabus/component"]):
                                 continue
+                            
                             while cleaned_row and cleaned_row[-1] == "":
                                 cleaned_row.pop()
 
                             if len(cleaned_row) >= 5:
-                                field_a, field_b = cleaned_row[2], cleaned_row[3]
+                                syllabus_name = cleaned_row[0]
+                                code = cleaned_row[1]
+                                field_a = cleaned_row[2]
+                                field_b = cleaned_row[3]
+                                session = cleaned_row[4]
+
                                 if re.match(duration_pattern, field_a, re.IGNORECASE):
-                                    duration, date = field_a, field_b
+                                    duration = field_a
+                                    date = field_b
                                 else:
-                                    date, duration = field_a, field_b
+                                    date = field_a
+                                    duration = field_b
 
                                 extracted_data.append({
                                     "id": current_id,
                                     "zone": zone,
                                     "season": season,
-                                    "syllabus_name": cleaned_row[0],
-                                    "code": cleaned_row[1],
+                                    "syllabus_name": syllabus_name,
+                                    "code": code,
                                     "date": date,
                                     "duration": duration,
-                                    "session": cleaned_row[4]
+                                    "session": session
                                 })
                                 current_id += 1
     except Exception as e:
         print(f"Error processing {pdf_url}: {e}")
+
     return extracted_data, current_id
 
-def run_full_scraper():
+def generate_timetable_data():
     pdf_links = get_pdf_links()
     master_data = []
     global_id_counter = 1
+
     for link in pdf_links:
         zone, season = parse_metadata_from_filename(link)
         if zone != "Unknown Zone":
             data, next_id = process_pdf(link, zone, season, global_id_counter)
             master_data.extend(data)
             global_id_counter = next_id
-    return master_data
 
-# --- API ENDPOINTS ---
+    return master_data
 
 @app.get("/")
 def health_check():
-    return {"status": "online", "message": "Cambridge Timetable API"}
+    return {"status": "online", "message": "Cambridge Timetable API is running."}
 
+@app.get("/timetable")
+def get_timetable():
+    data = generate_timetable_data()
+    return {
+        "status": "success",
+        "count": len(data),
+        "data": data
+    }
+
+@app.get("/test")
+def get_test_timetable():
+    mock_data = [
+        {
+            "id": 1,
+            "zone": "Zone 4",
+            "season": "June 2026",
+            "syllabus_name": "Mathematics",
+            "code": "9709/12",
+            "date": "15 May 2026",
+            "duration": "1h 50m",
+            "session": "AM"
+        },
+        {
+            "id": 2,
+            "zone": "Zone 4",
+            "season": "June 2026",
+            "syllabus_name": "Physics",
+            "code": "9702/22",
+            "date": "20 May 2026",
+            "duration": "1h 15m",
+            "session": "PM"
+        },
+        {
+            "id": 3,
+            "zone": "Zone 4",
+            "season": "June 2026",
+            "syllabus_name": "Computer Science",
+            "code": "9618/12",
+            "date": "22 May 2026",
+            "duration": "1h 30m",
+            "session": "AM"
+        }
+    ]
+    return {
+        "status": "success",
+        "count": len(mock_data),
+        "data": mock_data
+    }
+
+# NEW: Reads pre-saved timetable.json directly from repository raw storage (~50ms response time)
 @app.get("/getstoredtimetable")
 def get_stored_timetable():
-    if not GITHUB_REPO:
-        raise HTTPException(status_code=500, detail="GITHUB_REPO environment variable not configured.")
+    github_repo = os.getenv("VERCEL_GIT_REPO_OWNER", "") + "/" + os.getenv("VERCEL_GIT_REPO_SLUG", "")
     
-    raw_url = f"https://raw.githubusercontent.com/{GITHUB_REPO}/main/{JSON_FILE_PATH}"
-    response = requests.get(raw_url)
+    # Fallback to local file if running locally, or fetch from raw GitHub URL
+    if os.path.exists("timetable.json"):
+        import json
+        with open("timetable.json", "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return {"status": "success", "count": len(data), "data": data}
     
-    # FIXED: status_code instead of statusCode
-    if response.status_code == 200:
-        data = response.json()
-        return {
-            "status": "success",
-            "count": len(data),
-            "data": data
-        }
-    else:
-        return {"status": "error", "message": "Stored timetable JSON not found yet."}
-
-@app.get("/api/cron-update")
-def cron_update_timetable():
-    if not GITHUB_TOKEN or not GITHUB_REPO:
-        raise HTTPException(status_code=500, detail="Missing GITHUB_TOKEN or GITHUB_REPO env variables.")
-
-    new_data = run_full_scraper()
-    json_content = json.dumps(new_data, indent=2, ensure_ascii=False)
-
-    url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{JSON_FILE_PATH}"
-    headers = {
-        "Authorization": f"Bearer {GITHUB_TOKEN}",
-        "Accept": "application/vnd.github.v3+json"
-    }
-
-    get_file = requests.get(url, headers=headers)
-    sha = get_file.json().get("sha") if get_file.status_code == 200 else None
-
-    encoded_content = base64.b64encode(json_content.encode('utf-8')).decode('utf-8')
-    payload = {
-        "message": "Automated 24h timetable.json update [Vercel Cron]",
-        "content": encoded_content
-    }
-    if sha:
-        payload["sha"] = sha
-
-    put_response = requests.put(url, headers=headers, json=payload)
+    raw_url = f"https://raw.githubusercontent.com/{github_repo}/main/timetable.json"
+    res = requests.get(raw_url)
     
-    if put_response.status_code in [200, 201]:
-        return {"status": "success", "message": "Scraped and stored timetable.json successfully!"}
-    else:
-        return {"status": "error", "details": put_response.json()}
+    if res.status_code == 200:
+        data = res.json()
+        return {"status": "success", "count": len(data), "data": data}
+    
+    return {"status": "error", "message": "timetable.json not found yet in GitHub repository."}

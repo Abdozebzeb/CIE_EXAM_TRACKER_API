@@ -1,0 +1,40 @@
+name: 24h Timetable Scraper
+
+on:
+  schedule:
+    - cron: '0 0 * * *'  # Runs daily at 00:00 UTC
+  workflow_dispatch:      # Allows manual trigger button in GitHub UI
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run Scraper to generate timetable.json
+        run: |
+          python -c "
+          from api.main import generate_timetable_data
+          import json
+          data = generate_timetable_data()
+          with open('timetable.json', 'w', encoding='utf-8') as f:
+              json.dump(data, f, indent=4, ensure_ascii=False)
+          print('Successfully generated timetable.json with', len(data), 'entries')
+          "
+
+      - name: Commit and Push updated timetable.json
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git add timetable.json
+          git commit -m "Automated 24h timetable.json update" || exit 0
+          git push
