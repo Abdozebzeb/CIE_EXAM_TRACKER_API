@@ -12,7 +12,6 @@ app = FastAPI(title="Cambridge Timetable API")
 
 BASE_URL = "https://www.cambridgeinternational.org/exam-administration/cambridge-exams-officers-guide/phase-1-preparation/timetabling-exams/exam-timetables/"
 
-# GitHub Config from Environment Variables
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
 GITHUB_REPO = os.getenv("GITHUB_REPO")  # Format: "username/repo-name"
 JSON_FILE_PATH = "timetable.json"
@@ -102,17 +101,16 @@ def run_full_scraper():
 def health_check():
     return {"status": "online", "message": "Cambridge Timetable API"}
 
-# 1. INSTANT ENDPOINT FOR FLUTTER APP
 @app.get("/getstoredtimetable")
 def get_stored_timetable():
-    """Fetches the latest pre-parsed JSON stored in your repository in ~100ms."""
     if not GITHUB_REPO:
         raise HTTPException(status_code=500, detail="GITHUB_REPO environment variable not configured.")
     
     raw_url = f"https://raw.githubusercontent.com/{GITHUB_REPO}/main/{JSON_FILE_PATH}"
     response = requests.get(raw_url)
     
-    if response.statusCode == 200:
+    # FIXED: status_code instead of statusCode
+    if response.status_code == 200:
         data = response.json()
         return {
             "status": "success",
@@ -120,32 +118,25 @@ def get_stored_timetable():
             "data": data
         }
     else:
-        # Fallback if timetable.json hasn't been generated yet
-        return {"status": "error", "message": "Stored timetable JSON not found yet. Run /api/cron-update first."}
+        return {"status": "error", "message": "Stored timetable JSON not found yet."}
 
-# 2. AUTOMATED CRON JOB (Runs daily at 00:00 UTC)
 @app.get("/api/cron-update")
 def cron_update_timetable():
-    """Triggered automatically by Vercel every 24h to scrape PDFs and save JSON to GitHub."""
     if not GITHUB_TOKEN or not GITHUB_REPO:
         raise HTTPException(status_code=500, detail="Missing GITHUB_TOKEN or GITHUB_REPO env variables.")
 
-    # Step A: Run Scraper
     new_data = run_full_scraper()
     json_content = json.dumps(new_data, indent=2, ensure_ascii=False)
 
-    # Step B: Commit new JSON file to GitHub via API
     url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{JSON_FILE_PATH}"
     headers = {
-        "Authorization": "Bearer " + GITHUB_TOKEN,
+        "Authorization": f"Bearer {GITHUB_TOKEN}",
         "Accept": "application/vnd.github.v3+json"
     }
 
-    # Get current file SHA if it exists (required by GitHub API to overwrite files)
     get_file = requests.get(url, headers=headers)
     sha = get_file.json().get("sha") if get_file.status_code == 200 else None
 
-    # Step C: Prepare GitHub Push Payload
     encoded_content = base64.b64encode(json_content.encode('utf-8')).decode('utf-8')
     payload = {
         "message": "Automated 24h timetable.json update [Vercel Cron]",
@@ -154,7 +145,6 @@ def cron_update_timetable():
     if sha:
         payload["sha"] = sha
 
-    # Save to Repository
     put_response = requests.put(url, headers=headers, json=payload)
     
     if put_response.status_code in [200, 201]:
